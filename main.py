@@ -22,7 +22,7 @@ import io
 from enum_ import UserType
 import os
 from dotenv import load_dotenv
-from middleware import AuthMiddleware
+from middleware import *
 
 load_dotenv()
 
@@ -41,6 +41,11 @@ EMADATABASE_FILEIL = os.getenv("DATABASE_FILE")
 app=FastAPI()
 
 app.add_middleware(AuthMiddleware)
+
+app.add_middleware(AuthMiddleware)
+app.add_middleware(RoleBasedAuthMiddleware)
+app.add_middleware(RequestLoggingMiddleware)
+app.add_middleware(GlobalErrorHandlingMiddleware)
 
 app.include_router(auth.router)
 

@@ -1,6 +1,6 @@
 from datetime import timedelta, datetime
-from typing import Annotated
-from fastapi import APIRouter, Depends, HTTPException, status
+from typing import Annotated,Optional,List
+from fastapi import APIRouter, Depends, HTTPException, status,Form
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 from database import sessionlocal
@@ -14,6 +14,7 @@ import logging
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+
 import os
 import traceback
 from dotenv import load_dotenv
@@ -161,12 +162,19 @@ async def login_for_access_token(form_data: Annotated[OAuth2PasswordRequestForm,
     expires_delta = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     expires = datetime.now() + expires_delta
 
-    # Send email for verification if not admin
-    if user.user_role.value!= UserType.ADMIN.value:
-        send_email(EMAIL, "User Token Verification", f"User {user.name} needs token verification.")
-
     # Create access token
     token = create_access_token(user.name, user.email, user.user_role, expires_delta, user.access_token_verified)
+
+    # Send email for verification if not admin
+    if user.user_role.value!= UserType.ADMIN.value:
+        db.query(User).filter(User.name == form_data.username).update({
+            "access_token": token,
+            "access_token_expire": expires,
+               })
+        db.commit()
+        
+        # send_email(EMAIL, "User Token Verification", f"User {user.name} needs token verification.")
+
 
     # Update user token if admin, and auto-verify their token
     if user.user_role.value == UserType.ADMIN.value:
@@ -204,31 +212,294 @@ async def unblock_user(username: str, db: db_dependency, current_user: Annotated
     
     return {"message": f"User '{username}' has been unblocked successfully"}
 
-# Admin-only protected route
-@router.get("/admin-only")
-async def admin_only_route(current_user: Annotated[User, Depends(require_role(UserType.ADMIN))]):
-    return {"message": f"Hello, Admin {current_user['name']}. You are authorized to access this route."}
+@router.post("/admin-only")
+async def admin_only_route(
+    db: db_dependency,
+    current_user: Annotated[User, Depends(require_role(UserType.ADMIN))],
+    action: str = Form(..., description="Action to perform: view, edit, or delete", choices=["view", "edit", "delete"]),
+    username: Optional[str] = Form(None),
+    new_name: str = Form("", description="New name for the user"),
+    new_email: str = Form("", description="New email for the user"),
+    new_role: str = Form("", description="New role for the user"),
+    verify:bool= Form( description="verify for the user")
+):
+    # View all users if no specific username is provided and action is 'view'
+    if username is None and action == "view":
+        users = db.query(User).all()
+        user_info = [
+            {
+                "name": user.name,
+                "email": user.email,
+                "role": user.user_role,
+                "token": user.access_token,
+                "verified":user.access_token_verified
+            }
+            for user in users
+        ]
+        return {
+            "message": f"Hello, Admin {current_user['name']}. You are authorized to access this route.",
+            "users": user_info
+        }
+    
+    if username is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Username is required for edit and delete actions")
+
+    # Fetch specific user if username is provided
+    user_to_show = db.query(User).filter(User.name == username).first()
+    if not user_to_show:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    
+    if action == "view":
+        # Return the selected user's information
+        return {
+            "message": f"Hello, Admin {current_user['name']}. You are authorized to access this route.",
+            "content": f"user: {user_to_show.name} email: {user_to_show.email} role: {user_to_show.user_role} token: {user_to_show.access_token},verified:{user_to_show.access_token_verified}"
+        }
+    
+    elif action == "edit":
+        # Edit any provided field of the user
+        if new_name:
+            user_to_show.name = new_name
+        if new_email:
+            user_to_show.email = new_email
+        if new_role:
+            user_to_show.user_role = new_role
+        if verify:
+            user_to_show.access_token_verified=verify
+        db.commit()  # Save the changes
+        return {
+            "message": f"User {username}'s information has been updated.",
+            "content": f"user: {user_to_show.name} email: {user_to_show.email} role: {user_to_show.user_role} token: {user_to_show.access_token},verified:{user_to_show.access_token_verified}"
+        }
+    
+    elif action == "delete":
+        # Delete the user
+        db.delete(user_to_show)
+        db.commit()  # Commit the deletion
+        return {
+            "message": f"User {username} has been deleted successfully."
+        }
+
+    return {"error": "Invalid action"}
 
 
-# Admin and MID_USER protected route
-@router.get("/admin_mid-user")
-async def admin_mid_user(current_user: Annotated[User, Depends(require_role(UserType.ADMIN, UserType.MID_USER))]):
-    return {"message": f"Hello, {current_user['role']} {current_user['name']}. You are authorized to access this route."}
+from fastapi import Form, HTTPException, status
+from typing import Optional
+@router.post("/admin_mid-user")
+async def admin_mid_user(
+    db: db_dependency,
+    current_user: Annotated[User, Depends(require_role(UserType.ADMIN, UserType.MID_USER))],
+    action: str = Form(..., description="Action to perform: view, edit, or delete", choices=["view", "edit", "delete"]),
+    username: Optional[str] = Form(None),
+    new_name: str = Form("", description="New name for the user"),
+    new_email: str = Form("", description="New email for the user"),
+    new_role: str = Form("", description="New role for the user")
+):  
+    if username is None:
+        # Fetch all users
+        if current_user['role'] == UserType.ADMIN:
+            users = db.query(User).all()
+        elif current_user['role'] == UserType.MID_USER:
+            users = db.query(User).filter(User.user_role.in_([UserType.MID_USER, UserType.END_USER])).all()
+        
+        user_info = [
+            {
+                "name": user.name,
+                "email": user.email,
+                "role": user.user_role,
+                "token": user.access_token,
+                "verified": user.access_token_verified
+            }
+            for user in users
+        ]
+        
+        return {
+            "message": f"Hello, {current_user['name']}! You are authorized to access this route.",
+            "users": user_info
+        }
+    
+    # Fetch specific user if username is provided
+    user_to_show = db.query(User).filter(User.name == username).first()
+    if not user_to_show:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+    # Admin logic: Can perform any action on any user
+    if current_user['role'] == UserType.ADMIN:
+        if action == "view":
+            return {
+                "message": f"Hello, Admin {current_user['name']}. You are authorized to view this user.",
+                "content": f"user: {user_to_show.name}, email: {user_to_show.email}, role: {user_to_show.user_role}, token: {user_to_show.access_token},verified: {user_to_show.access_token_verified}"
+            }
+        elif action == "edit":
+            if new_name:
+                user_to_show.name = new_name
+            if new_email:
+                user_to_show.email = new_email
+            if new_role:
+                user_to_show.user_role = new_role
+            db.commit()
+            return {
+                "message": f"User {username}'s information has been updated.",
+                "content": f"user: {user_to_show.name}, email: {user_to_show.email}, role: {user_to_show.user_role}, token: {user_to_show.access_token},verified: {user_to_show.access_token_verified}"
+            }
+        elif action == "delete":
+            db.delete(user_to_show)
+            db.commit()
+            return {
+                "message": f"User {username} has been deleted successfully."
+            }
+    
+    # MID_USER logic: Can only modify or delete END_USERs, and can view MID_USER and END_USER
+    if current_user['role'] == UserType.MID_USER:
+        if user_to_show.user_role not in [UserType.MID_USER, UserType.END_USER]:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You are not authorized to view this user.")
+        
+        if action == "view":
+            return {
+                "message": f"Hello, {current_user['name']}. You are authorized to view this user.",
+                "content": f"user: {user_to_show.name}, email: {user_to_show.email}, role: {user_to_show.user_role}"
+            }
+        elif action == "edit":
+            if user_to_show.user_role != UserType.END_USER:
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You are not authorized to edit this user.")
+            
+            if new_name:
+                user_to_show.name = new_name
+            if new_email:
+                user_to_show.email = new_email
+            if new_role:
+                user_to_show.user_role = new_role
+            db.commit()
+            return {
+                "message": f"User {username}'s information has been updated.",
+                "content": f"user: {user_to_show.name}, email: {user_to_show.email}, role: {user_to_show.user_role}, "
+            }
+        elif action == "delete":
+            if user_to_show.user_role != UserType.END_USER:
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You are not authorized to delete this user.")
+            
+            db.delete(user_to_show)
+            db.commit()
+            return {
+                "message": f"User {username} has been deleted successfully."
+            }
+
+    return {"error": "Invalid action or permission denied"}
 
 
-# Example of a protected route (no role requirement)
-@router.get("/protected-route")
-async def protected_route(current_user: Annotated[User, Depends(get_current_user)]):
-    return {"message": f"Hello, {current_user['name']}({current_user['role']}). You are authorized to access this route."}
+# @router.post("/protected-route")
+# async def protected_route(
+#     db: db_dependency,
+#     current_user: Annotated[User, Depends(get_current_user)],
+#     action: str = Form(..., description="Action to perform: view, edit, or delete", choices=["view", "edit", "delete"]),
+#     new_name: str = Form("", description="New name for the user"),
+#     new_email: str = Form("", description="New email for the user"),
+#     new_role: str = Form("", description="New role for the user")
+# ):
+#     # Fetch the current user from the database
+#     user_to_show = db.query(User).filter(User.id == current_user.id).first()
+#     if not user_to_show:
+#         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+#     if action == "view":
+#         return {
+#             "message": f"Hello, {current_user['name']}({current_user['role']}). You are authorized to view your information.",
+#             "content": {
+#                 "user": user_to_show.name,
+#                 "email": user_to_show.email,
+#                 "role": user_to_show.user_role,
+#                 "token": user_to_show.access_token,
+#                 "verified":user_to_show.access_token_verified
+#             }
+#         }
+    
+#     elif action == "edit":
+#         # Edit any provided field of the current user
+#         if new_name:
+#             user_to_show.name = new_name
+#         if new_email:
+#             user_to_show.email = new_email
+#         if new_role:
+#             user_to_show.user_role = new_role
+#         db.commit()  # Save the changes
+#         return {
+#             "message": "Your information has been updated.",
+#             "content": {
+#                 "user": user_to_show.name,
+#                 "email": user_to_show.email,
+#                 "role": user_to_show.user_role,
+#                 "token": user_to_show.access_token,
+#                 "verified":user_to_show.access_token_verified
+
+
+#             }
+#         }
+    
+#     elif action == "delete":
+#         # Delete the current user
+#         db.delete(user_to_show)
+#         db.commit()  # Commit the deletion
+#         return {
+#             "message": "Your account has been deleted successfully."
+#         }
+
+#     return {"error": "Invalid action"}
+
+@router.post("/protected-route")
+async def protected_route(
+    db: db_dependency,
+    current_user: Annotated[User, Depends(get_current_user)],
+    username: Optional[str] = Form(None, description="Username to search for"),
+    role: Optional[UserType] = Form(None, description="Role to search for"),
+    page: int = Form(1, description="Page number for pagination"),
+    limit: int = Form(10, description="Number of users to return per page"),
+):
+    query = db.query(User)
+
+    if username:
+        query = query.filter(User.name.ilike(f"%{username}%"))
+    if role:
+        query = query.filter(User.user_role == role)
+
+    # Apply pagination
+    offset = (page - 1) * limit
+    users = query.offset(offset).limit(limit).all()
+
+    total_users = query.count()  # Total number of users matching the criteria
+
+    if not users:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No users found matching the search criteria."
+        )
+
+    user_info = [
+        {
+            "name": user.name,
+            "email": user.email,
+            "role": user.user_role,
+        }
+        for user in users
+    ]
+
+    return {
+        "total_users": total_users,
+        "page": page,
+        "limit": limit,
+        "users": user_info,
+    }
+
+
 
 
 # Logout endpoint (protected)
 @router.post("/logout")
-async def logout(current_user, db: db_dependency):
+async def logout(current_user: Annotated[User, Depends(get_current_user)],db: db_dependency):
     # Invalidate the token by removing it from the database
-    db.query(User).filter(User.name == current_user).update({
+    db.query(User).filter(User.name == current_user['name']).update({
         "access_token": None,
         "access_token_expire": None,
+        "access_token_verified":False
     })
     db.commit()
 
