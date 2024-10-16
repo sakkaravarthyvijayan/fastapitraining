@@ -15,6 +15,7 @@ import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 import os
+import traceback
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -123,16 +124,19 @@ def get_current_user(token: Annotated[str, Depends(oauth2_scheme)], db: db_depen
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="User not found or token invalidated"
         )
-    return user
+    return {"name":user.name,"role":role}
+
+
+
 
 # Role-based access control decorator
 def require_role(*required_roles: UserType):
     def role_checker(current_user: Annotated[User, Depends(get_current_user)]):
         # Log the current user's role for debugging
-        logging.info(f"Current User Role: {current_user.user_role}")
+        logging.info(f"Current User Role: {current_user['role']}")
 
         # Check if the user's role is a string and convert it to UserType Enum
-        current_user_role = UserType(current_user.user_role)
+        current_user_role = UserType(current_user['role'])
 
         # Compare the current user's role with the required roles
         if current_user_role not in required_roles:
@@ -203,26 +207,26 @@ async def unblock_user(username: str, db: db_dependency, current_user: Annotated
 # Admin-only protected route
 @router.get("/admin-only")
 async def admin_only_route(current_user: Annotated[User, Depends(require_role(UserType.ADMIN))]):
-    return {"message": f"Hello, Admin {current_user.name}. You are authorized to access this route."}
+    return {"message": f"Hello, Admin {current_user['name']}. You are authorized to access this route."}
 
 
 # Admin and MID_USER protected route
 @router.get("/admin_mid-user")
 async def admin_mid_user(current_user: Annotated[User, Depends(require_role(UserType.ADMIN, UserType.MID_USER))]):
-    return {"message": f"Hello, {current_user.user_role.value} {current_user.name}. You are authorized to access this route."}
+    return {"message": f"Hello, {current_user['role']} {current_user['name']}. You are authorized to access this route."}
 
 
 # Example of a protected route (no role requirement)
 @router.get("/protected-route")
 async def protected_route(current_user: Annotated[User, Depends(get_current_user)]):
-    return {"message": f"Hello, {current_user.name}({current_user.user_role}). You are authorized to access this route."}
+    return {"message": f"Hello, {current_user['name']}({current_user['role']}). You are authorized to access this route."}
 
 
 # Logout endpoint (protected)
 @router.post("/logout")
-async def logout(current_user: Annotated[User, Depends(get_current_user)], db: db_dependency):
+async def logout(current_user, db: db_dependency):
     # Invalidate the token by removing it from the database
-    db.query(User).filter(User.name == current_user.name).update({
+    db.query(User).filter(User.name == current_user).update({
         "access_token": None,
         "access_token_expire": None,
     })

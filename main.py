@@ -22,6 +22,7 @@ import io
 from enum_ import UserType
 import os
 from dotenv import load_dotenv
+from middleware import AuthMiddleware
 
 load_dotenv()
 
@@ -38,6 +39,9 @@ EMADATABASE_FILEIL = os.getenv("DATABASE_FILE")
 
 
 app=FastAPI()
+
+app.add_middleware(AuthMiddleware)
+
 app.include_router(auth.router)
 
 models.Base.metadata.create_all(bind=engine)
