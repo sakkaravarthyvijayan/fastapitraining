@@ -13,14 +13,28 @@ class User(Base):
     name=Column(String(500))
     hashed_password=Column(String(500))
     email=Column(String(500),unique=True)
-    VERIFIED=Column(Boolean,default=False)
+    role=Column(Enum(UserType))
     OTP=Column(String(500))
     password_reset_token=Column(String(500))
     password_reset_expiration=Column(String(500))
+    OTP_verified=Column(Boolean,default=False)
+    VERIFIED=Column(Boolean,default=False)
+    BLOCKED=Column(Boolean,default=False)
+
+
+
+class UserDetails(Base):
+    __tablename__ = 'user_details'
+    id = Column(INTEGER, primary_key=True, index=True, autoincrement=True)
+    user_id=Column(INTEGER, ForeignKey('Userinfo.id'))
+    session_ip = Column(String(5000)) 
+    session_token=Column(String(5000))
     access_token=Column(String(5000))
-    access_token_expire=Column(String(500))
-    user_role=Column(Enum(UserType))
     access_token_verified=Column(Boolean,default=False)
+    session_token_verified=Column(Boolean,default=False)
+    expire=Column(String(500))
+
+
 
     
 
